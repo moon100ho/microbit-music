@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>MIDI 재생 + 음계 표시 + micro:bit 전송 (Web Serial)</title>
+
+  <!-- Tone.js -->
+  <script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+  <!-- @tonejs/midi -->
+  <script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      padding: 40px;
+    }
+    #note {
+      font-size: 64px;
+      margin-top: 30px;
+      font-weight: bold;
+    }
+    button {
+      font-size: 16px;
+      padding: 10px 16px;
+      margin: 5px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎼 MIDI 재생 + 음계 표시</h1>
+
+  <input type="file" id="midiFile" accept=".mid,.midi" />
+  <br /><br />
+
+  <button id="connectBtn">🔌 micro:bit 연결</button>
+  <button id="playBtn">▶ 재생</button>
+
+  <div id="note">-</div>
+
+  <script>
+    let midiData = null;
+    let synth = new Tone.PolySynth(Tone.Synth).toDestination();
+    let holdTimer = null;
+
+    // Web Serial 관련
+    let port = null;
+    let writer = null;
+    let lastSentNote = null;
+
+    const noteNames = ["도", "도#", "레", "레#", "미", "파", "파#", "솔", "솔#", "라", "라#", "시"];
+
+    const NOTE_MAP = {
+      "도": 0, "도#": 1, "레": 2, "레#": 3,
+      "미": 4, "파": 5, "파#": 6,
+      "솔": 7, "솔#": 8, "라": 9,
+      "라#": 10, "시": 11
+    };
+
+    /* =========================
+       MIDI 파일 로드
+    ========================== */
+    document.getElementById("midiFile").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const buffer = await file.arrayBuffer();
+      midiData = new Midi(buffer);
+
+      console.log("[MIDI] 파일 로드 완료");
+      alert("MIDI 파일 로드 완료");
+    });
+
+    /* =========================
+       micro:bit 연결 (Web Serial)
+    ========================== */
+    document.getElementById("connectBtn").addEventListener("click", async () => {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+
+        writer = port.writable.getWriter();
+
+        console.log("[Serial] micro:bit 연결 성공");
+        alert("micro:bit 연결 성공");
+      } catch (e) {
+        console.error("[Serial] 연결 실패", e);
+        alert("micro:bit 연결 실패");
+      }
+    });
+
+    /* =========================
+       재생 버튼
+    ========================== */
+    document.getElementById("playBtn").addEventListener("click", async () => {
+      if (!midiData) {
+        alert("먼저 MIDI 파일을 선택하세요");
+        return;
+      }
+
+      await Tone.start();
+      Tone.Transport.cancel();
+      Tone.Transport.stop();
+
+      console.log("[Player] 재생 시작");
+      scheduleMidi(midiData);
+      Tone.Transport.start();
+    });
+
+    function scheduleMidi(midi) {
+      midi.tracks.forEach(track => {
+        track.notes.forEach(note => {
+
+          // 사운드 재생
+          Tone.Transport.schedule(time => {
+            synth.triggerAttackRelease(
+              note.name,
+              note.duration,
+              time,
+              note.velocity
+            );
+          }, note.time);
+
+          // 음계 표시 + 전송
+          Tone.Transport.schedule(time => {
+            showNote(note.midi);
+          }, note.time);
+        });
+      });
+    }
+
+    function showNote(midiNumber) {
+      const name = noteNames[midiNumber % 12];
+      document.getElementById("note").innerText = name;
+
+      console.log("[Note] 표시:", name, "(midi:", midiNumber, ")");
+      sendToMicrobit(name);
+
+      // 음 유지 (500ms)
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(() => {
+        document.getElementById("note").innerText = "-";
+        lastSentNote = null;
+      }, 500);
+    }
+
+    /* =========================
+       micro:bit로 음계 전송
+    ========================== */
+    async function sendToMicrobit(noteName) {
+      if (!writer) {
+        console.warn("[Serial] 아직 micro:bit 연결 안 됨");
+        return;
+      }
+      if (noteName === "-" || noteName === lastSentNote) return;
+
+      lastSentNote = noteName;
+
+      const value = NOTE_MAP[noteName];
+      const text = value.toString() + "\n";
+      const data = new TextEncoder().encode(text);
+
+      // ✅ 웹에서 보내는 값 확인
+      console.log("[Serial] 전송 →", noteName, "=", value);
+
+      try {
+        await writer.write(data);
+      } catch (e) {
+        console.error("[Serial] 전송 오류", e);
+      }
+    }
+  </script>
+
+</body>
+</html>
